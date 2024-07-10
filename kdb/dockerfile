@@ -1,0 +1,85 @@
+# Declare the alpine linux base image
+FROM alpine:3.10
+
+LABEL base.author="Andy Manson" 
+# See https://github.com/andymans/docker-kdb
+LABEL secondary.author="Andy vandy"
+WORKDIR /
+# Set Environment variable(s) for q and add to Unix PATH
+ENV QHOME /q
+ENV PATH ${PATH}:${QHOME}/l32/
+
+# Refresh / Update the base image using alpine's package manager "apk", and binutils to allow use of e.g. tar/ar while building
+RUN apk update \
+&& apk add --update binutils \
+&& apk add --update git \
+&& apk add --update openssh
+
+# Download & unpack "libc6-i386 for amd64" debian package (this is required for "q" to run on a 64-bit OS).
+# For information view: https://packages.debian.org/jessie/amd64/libc6-i386/
+RUN LIBC32_DEB=libc6-i386_2.36-9+deb12u7_amd64.deb \
+  && wget "http://ftp.ca.debian.org/debian/pool/main/g/glibc/libc6-i386_2.36-9+deb12u7_amd64.deb" \
+  && echo "73290b9ce75a93ed0d50e1ef3cac65ff  $LIBC32_DEB" | md5sum -c - \
+  && ar p $LIBC32_DEB data.tar.xz | unxz | tar -x \
+  && rm -rf $LIBC32_DEB /usr/share/doc/libc6-i386 /usr/lib32/gconv /usr/share/lintian \
+	&& apk del binutils \
+	&& rm -rf /var/lib/apk/lists/*
+
+WORKDIR /
+# Ensure we have your our zipped version of q for linux in the same folder as this Dockerfile, and copy it
+COPY q.zip .
+
+
+# Unzip q for linux to the root ('/'), change file / directory permissions, finally clean up by removing unused folders / utilities
+RUN mkdir q
+RUN unzip /q.zip -d q
+
+COPY ./kc.lic /q/kc.lic
+
+# CMD [ "sh" ] 
+RUN chown -R root /q; chmod 755 /q/l32/q \
+    && rm /q.zip \
+    # NB Mac OSX users - the unzip process may have created a __MACOSX directory - it can be safely deleted by uncommenting the line below:
+    && rm -rf /__MACOSX \
+    && apk del binutils
+
+# from https://github.com/KxSystems/solace/blob/master/docs/build.md
+# TODO could use download endpoint for solace
+COPY solclient_Linux_musl-x86_64_opt_7.30.0.2.tar.gz /solclient_Linux_musl-x86_64_opt_7.30.0.2.tar.gz
+RUN mkdir solclient
+RUN tar xzf solclient_Linux_musl-x86_64_opt_7.30.0.2.tar.gz -C ./solclient --strip-components=1
+
+ENV SOLACE_INSTALL_DIR=/solclient
+ENV LD_LIBRARY_PATH="$SOLACE_INSTALL_DIR:$LD_LIBRARY_PATH"
+
+WORKDIR /solclient
+RUN git clone https://github.com/KxSystems/solace.git
+RUN mkdir /solclient/solace/build 
+
+WORKDIR /solclient/solace/build
+
+RUN apk add cmake
+RUN apk add gcc
+RUN apk add make
+RUN apk add alpine-sdk
+
+RUN cmake ../
+
+RUN cmake --build . --target install
+
+WORKDIR /
+
+COPY entrypoint.sh /entrypoint.sh
+
+
+
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 777 entrypoint.sh
+
+COPY . .
+
+WORKDIR /
+EXPOSE  5001
+# ENTRYPOINT [ "sh", "entrypoint.sh" ]
+ENTRYPOINT [ "sh" ]
